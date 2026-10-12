@@ -1,8 +1,8 @@
 # Verification — điền trước khi nộp
 
 - OS / Python / Gitleaks version: macOS / Python 3.11.14 / gitleaks 8.30.1
-- `python -m pytest tests/ -q`:
-- `pre-commit run --all-files`:
+- `python -m pytest tests/ -q`: 23 passed
+- `pre-commit run --all-files`: Passed
 - Ledger verify: True
 - Các lỗi còn lại: Không
 
