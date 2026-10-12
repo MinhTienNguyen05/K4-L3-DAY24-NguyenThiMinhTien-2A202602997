@@ -37,12 +37,65 @@ rồi gọi verify() phải trả về False.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 
+def _compute_hash(entry_data: dict) -> str:
+    # Không tính trường hash vào nội dung băm
+    payload = {k: v for k, v in entry_data.items() if k != "hash"}
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def append(entry: dict, path: Path) -> dict:
-    raise NotImplementedError("BƯỚC 3d: implement ledger append")
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    prev_hash = "0" * 64
+    if path.exists() and path.stat().st_size > 0:
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if lines:
+            last_entry = json.loads(lines[-1])
+            prev_hash = last_entry.get("hash", "0" * 64)
+
+    record = dict(entry)
+    record["prev_hash"] = prev_hash
+    record["hash"] = _compute_hash(record)
+
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    return record
 
 
 def verify(path: Path) -> bool:
-    raise NotImplementedError("BƯỚC 3d: implement ledger verify")
+    if not path.exists():
+        return True
+
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not lines:
+        return True
+
+    expected_prev = "0" * 64
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except Exception:
+            return False
+
+        # Kiểm tra reason không được rỗng
+        if not entry.get("reason"):
+            return False
+
+        # Kiểm tra prev_hash có khớp hash dòng trước
+        if entry.get("prev_hash") != expected_prev:
+            return False
+
+        current_hash = entry.get("hash")
+        if not current_hash or current_hash != _compute_hash(entry):
+            return False
+
+        expected_prev = current_hash
+
+    return True
