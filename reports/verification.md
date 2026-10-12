@@ -1,10 +1,10 @@
 # Verification — điền trước khi nộp
 
-- OS / Python / Gitleaks version:
+- OS / Python / Gitleaks version: macOS / Python 3.11.14 / gitleaks 8.30.1
 - `python -m pytest tests/ -q`:
 - `pre-commit run --all-files`:
-- Ledger verify:
-- Các lỗi còn lại:
+- Ledger verify: True
+- Các lỗi còn lại: Không
 
 
 
@@ -20,3 +20,9 @@
   - Không xử lý được các cấu trúc văn bản phi cấu trúc, sai chính tả, hoặc viết tắt phức tạp nếu không có mẫu cố định như mô hình NER chuyên sâu.
 
 
+### CP3b, CP3c, CP3e — Policy, OBO & Ledger
+- `tests/test_policy.py`: PASSED
+- `tests/test_obo.py`: PASSED
+- `tests/test_injection.py`: 8/8 PASSED (chặn đứng exfiltration trên cả 4 biến thể dưới support_l1 và dpo)
+- `tests/test_ledger.py`: 3/3 PASSED (hash chain hợp lệ, phát hiện can thiệp và yêu cầu reason)
+- Ledger verify: `verify(Path('reports/ledger.jsonl')) == True`
