@@ -34,7 +34,12 @@ không phải xác thực người dùng production.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+PRINCIPALS_PATH = Path(__file__).resolve().parent.parent / "data" / "principals.json"
 
 
 @dataclass(frozen=True)
@@ -52,4 +57,53 @@ class PolicyContext:
 
 
 def check(context: PolicyContext) -> tuple[bool, str]:
-    raise NotImplementedError("BƯỚC 3b: implement policy check")
+    # 1. Kiểm tra classification hợp lệ
+    valid_classes = {"public", "internal", "restricted"}
+    if context.data_classification not in valid_classes:
+        return False, f"Invalid data classification: {context.data_classification}"
+
+    # 2. Rule tối thiểu: restricted + egress bị cấm hoàn toàn
+    if context.data_classification == "restricted" and context.egress_enabled:
+        return False, "DENY: Egress is strictly forbidden on restricted data."
+
+    # 3. Kiểm tra expires_at (UTC)
+    if context.expires_at:
+        try:
+            exp_time = datetime.fromisoformat(context.expires_at)
+            now = datetime.now(timezone.utc)
+            if exp_time < now:
+                return False, f"DENY: Token/session expired at {context.expires_at}"
+        except Exception:
+            return False, "DENY: Invalid expires_at format"
+
+    # Nếu không chỉ định principal_id hoặc requested_tool (chỉ kiểm tra rule cơ bản như test_policy)
+    if not context.principal_id and not context.requested_tool:
+        return True, "ALLOW: Policy checks passed"
+
+    # 4. Kiểm tra OBO Principal
+    if not PRINCIPALS_PATH.exists():
+        return False, "DENY: principals.json missing"
+
+    principals_data = json.loads(PRINCIPALS_PATH.read_text(encoding="utf-8"))
+    principal = principals_data.get(context.principal_id)
+    if not principal:
+        return False, f"DENY: Unknown principal identity '{context.principal_id}'"
+
+    # 5. Kiểm tra purpose
+    if context.request_purpose and context.request_purpose not in principal.get("purposes", []):
+        return False, f"DENY: Purpose '{context.request_purpose}' not allowed for principal '{context.principal_id}'"
+
+    # 6. Kiểm tra requested_tool nằm trong quyền principal và agent
+    if context.requested_tool:
+        if context.requested_tool not in principal.get("allowed_tools", []):
+            return False, f"DENY: Tool '{context.requested_tool}' not allowed for principal '{context.principal_id}'"
+
+        if context.agent_scopes and context.requested_tool not in context.agent_scopes:
+            return False, f"DENY: Tool '{context.requested_tool}' exceeds agent_scopes"
+
+        # Kiểm tra delegation_depth
+        if context.delegation_depth > 0:
+            if context.requested_tool not in context.parent_scopes:
+                return False, f"DENY: Tool '{context.requested_tool}' exceeds parent_scopes in delegation"
+
+    return True, f"ALLOW: Authorized tool '{context.requested_tool}' for principal '{context.principal_id}'"
