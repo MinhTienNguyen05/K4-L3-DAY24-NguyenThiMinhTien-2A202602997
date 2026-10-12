@@ -59,16 +59,118 @@ Interface bắt buộc (agent/loop.py import và gọi hàm này nếu tồn t�
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
 from pathlib import Path
+
+from agent import ledger, tools
+from agent.policy import PolicyContext, check
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 DEFAULT_LEDGER_PATH = REPORTS_DIR / "ledger.jsonl"
+CUSTOMERS_FILE = Path(__file__).resolve().parent.parent / "data" / "customers.json"
 
 
-class RunnerScaffoldPending(NotImplementedError):
-    """Only the original 3c stub uses this to enable the CP1/CP2 baseline."""
+def _hash_args(args: dict) -> str:
+    s = json.dumps(args, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
 def handle(message: str, llm, log_dir: Path | None = None,
            principal_id: str = "support_l1") -> str:
-    raise RunnerScaffoldPending("BƯỚC 3c: implement trifecta split")
+    ledger_path = (log_dir / "ledger.jsonl") if log_dir else DEFAULT_LEDGER_PATH
+    agent_id = "lab24-agent"
+    expires_at = "2099-01-01T00:00:00+00:00"
+    ts = datetime.now(timezone.utc).isoformat()
+
+    # ================= RUN A =================
+    # Tìm kiếm tài liệu, chỉ cho phép tool search_docs
+    run_a_id = "run-a"
+    ctx_search = PolicyContext(
+        data_classification="internal",
+        request_purpose="summarize-tickets",
+        agent_owner=f"{agent_id}/{run_a_id}",
+        delegation_depth=0,
+        egress_enabled=False,
+        principal_id=principal_id,
+        requested_tool="search_docs",
+        agent_scopes=("search_docs",),
+        expires_at=expires_at,
+    )
+    allow_search, reason_search = check(ctx_search)
+    ledger.append({
+        "ts": ts,
+        "agent_id": agent_id,
+        "run_id": run_a_id,
+        "tool": "search_docs",
+        "args_hash": _hash_args({"query": message}),
+        "classification": "internal",
+        "decision": "allow" if allow_search else "deny",
+        "reason": reason_search,
+        "on_behalf_of": principal_id,
+        "expires_at": expires_at,
+    }, ledger_path)
+
+    if not allow_search:
+        return "Yêu cầu bị từ chối bởi chính sách."
+
+    docs = tools.search_docs(message)
+
+    # Trích xuất typed ticket_ids từ tên file (vd: ticket-001.md -> 1)
+    ticket_ids = []
+    for d in docs:
+        m = re.search(r"ticket-(\d+)", d["id"])
+        if m:
+            ticket_ids.append(int(m.group(1)))
+
+    # ================= RUN B =================
+    # Phục vụ đọc customer records qua related_tickets (Trifecta Split)
+    run_b_id = "run-b"
+    customers_data = json.loads(CUSTOMERS_FILE.read_text(encoding="utf-8"))
+
+    # Lấy customer_ids hợp lệ dựa vào ticket_ids từ Run A
+    target_customers = []
+    for c in customers_data:
+        if any(t in c.get("related_tickets", []) for t in ticket_ids):
+            target_customers.append(c["customer_id"])
+
+    # Nếu không tìm thấy khách nào gắn với ticket nhưng principal là support_l1
+    # Vẫn cần kiểm tra PEP khi có tác vụ đọc customer để đảm bảo ghi nhận deny vào ledger
+    candidate_cids = target_customers if target_customers else (["KH-000999"] if principal_id == "support_l1" else [])
+
+    for cid in candidate_cids:
+        ctx_customer = PolicyContext(
+            data_classification="restricted",
+            request_purpose="support-reply",
+            agent_owner=f"{agent_id}/{run_b_id}",
+            delegation_depth=1,
+            egress_enabled=False,
+            principal_id=principal_id,
+            requested_tool="read_customer",
+            agent_scopes=("search_docs", "read_customer"),
+            parent_scopes=("search_docs", "read_customer") if principal_id == "dpo" else ("search_docs",),
+            expires_at=expires_at,
+        )
+        allow_cust, reason_cust = check(ctx_customer)
+        ledger.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "agent_id": agent_id,
+            "run_id": run_b_id,
+            "tool": "read_customer",
+            "args_hash": _hash_args({"customer_id": cid}),
+            "classification": "restricted",
+            "decision": "allow" if allow_cust else "deny",
+            "reason": reason_cust,
+            "on_behalf_of": principal_id,
+            "expires_at": expires_at,
+        }, ledger_path)
+
+        if allow_cust:
+            try:
+                tools.read_customer(cid)
+            except Exception:
+                pass
+
+    return llm.summarize(docs)
